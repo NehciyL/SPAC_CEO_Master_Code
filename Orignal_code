@@ -1,0 +1,1505 @@
+# Load required libraries
+#install.packages("readr")
+#install.packages("openxlsx")
+#install.packages("edgar")
+
+
+library(readr)
+library(openxlsx)
+library(edgar)
+
+setwd("/Users/a/Desktop/Desktop - Yichen Pro/Local_file/Thesis/CodeForR/ThesisCode")
+
+# Function to handle automatic downloading
+getFilingsAuto <- function(cik.no, form.type, filing.year, downl.permit = "y") {
+  result <- tryCatch({
+    getFilings(cik.no = cik.no, form.type = form.type, filing.year = filing.year, downl.permit = downl.permit)
+  }, error = function(e) {
+    if (grepl("type y/n", e$message)) {
+      message("Encountered prompt, retrying...")
+      return(getFilings(cik.no = cik.no, form.type = form.type, filing.year = filing.year, useragent = useragent, downl.permit = downl.permit))
+    } else {
+      stop(e)
+    }
+  })
+  return(result)
+}
+
+# Read the stock information from CSV
+df <- read_csv("stock_info.csv")
+df
+# Display column names
+colnames(df)
+
+# Count how many unique companies are present in the data
+num_unique_companies <- length(unique(df$COMNAM))
+print(paste("Number of unique companies:", num_unique_companies))
+
+
+# The list is copy form sec.gov, with industry code = 6770, which is blank check company code
+# website info have shows in the Excel to mark.
+# Read the list of SPAC companies from Excel
+shell_companys <- read.xlsx("List_for_blank_check _202406.xlsx")
+shell_companys <- subset(shell_companys, select = -c(`Website:`, `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&SIC=6770&owner=include&match=starts-with&start=0&count=40&hidefilings=0`))
+
+# from here we have the blank check company list from SEC.GOV
+# then remember our time range is from 1998 to 2024, and we have the total 
+# amount from Statistic shows from 2003 to 2023 is 1357
+# based on this we should have our amount over 1357 at least.
+
+# Here we use sec.gov to get the company TICKER from CIK we have in the dataset.
+# the mapping resource is from official sec.gov: https://www.sec.gov/file/company-tickers-exchange
+# then through: https://www.sec.gov/files/company_tickers_exchange.json
+#install.packages("jspnlite")
+#install.packages("httr")
+#install.packages("dplyr")
+library(httr)
+library(jsonlite)
+library(dplyr)
+
+file_path <- "/Users/a/Library/CloudStorage/OneDrive-SKEMABusinessSchool/Back_up_yichen2/backup/Research/Thesis/CodeForR/ThesisCode/company_tickers_exchange.json" # Adjust the file path if necessary
+company_data <- fromJSON(file_path)
+
+# Convert the JSON data to a data frame
+company_df <- as.data.frame(company_data)
+company_df <- company_df %>% select(-1)
+# Display the first few rows of the data frame to understand its structure
+head(company_df)
+company_df <- company_df %>%
+        rename(
+                CIK = data.1,
+                CompanyName = data.2,
+                Ticker = data.3,
+                Exchange = data.4
+        )
+
+Ticker <- company_df
+
+Ticker_list <- left_join(shell_companys, Ticker, by = "CIK")
+
+# View the first few rows to verify the join worked as expected
+head(Ticker_list)
+
+unique_tickers <- unique(Ticker_list$Ticker)
+num_unique_tickers <- length(unique_tickers)
+
+# Filter out rows where Ticker is NA
+shell_ticker <- Ticker_list %>%
+        filter(!is.na(Ticker))
+
+# Filter out rows where the Exchange is OTC
+# Assuming the OTC market is identified as 'OTC' in the Exchange column
+shell_ticker <- shell_ticker %>%
+        filter(Exchange != "OTC")
+# Assuming your dataframe is named Ticker_list
+#output_file_path <- "Ticker_list.xlsx"  # Define the output file path
+# Write the dataframe to an Excel file
+#write.xlsx(Ticker, file = output_file_path, rowNames = FALSE)
+#output_file_path <- "Ticker_Unique.xlsx"  # Define the output file path
+# Write the dataframe to an Excel file
+#write.xlsx(Ticker_unique, file = output_file_path, rowNames = FALSE)
+#output_file_path <- "shell_company.xlsx"  # Define the output file path
+# Write the dataframe to an Excel file
+#write.xlsx(shell_companys, file = output_file_path, rowNames = FALSE)
+
+# so now we try to find all the stock info use Ticker to find from "df" file, 
+# then have a new file with all shell company stock info
+
+# Ensure the column names for merging match in both dataframes
+# Assuming df has a column called 'Ticker' and the Ticker_list has the same column name
+if (!"Ticker" %in% colnames(df)) stop("Ticker column missing in df")
+if (!"Ticker" %in% colnames(Ticker_list)) stop("Ticker column missing in Ticker_list")
+
+# Now we try to get how many company has change their CIK via form filling
+# The idea here is to extract "8-k" form text search for the new CIK
+# We loading filings into a dataframe
+library(dplyr) # call this library again to make sure the loading part
+library(readr)
+
+# Define the path to the main directory containing the CIK folders
+main_directory <- "/Users/a/Desktop/Desktop - Yichen Pro/Local_file/Thesis/CodeForR/ThesisCode/edgar_Filings/Form 8-K"
+
+# List all CIK folders within the main directory
+cik_folders <- list.dirs(main_directory, full.names = TRUE, recursive = FALSE)
+
+# Initialize an empty list to store filings
+filings_list <- list()
+
+# Loop over each CIK folder
+for (cik_folder in cik_folders) {
+        # List all files in the current CIK folder
+        filing_files <- list.files(cik_folder, full.names = TRUE)
+        
+        # Loop over each filing file within the CIK folder
+        for (file in filing_files) {
+                # Read the content of the filing
+                filing_content <- readLines(file, warn = FALSE)
+                
+                # Optionally, store CIK as part of the data for tracking
+                cik <- basename(cik_folder)
+                
+                # Create a dataframe (or named list) for the filing
+                filing_df <- data.frame(CIK = cik, Content = paste(filing_content, collapse = "\n"))
+                
+                # Append the dataframe to the list
+                filings_list[[length(filings_list) + 1]] <- filing_df
+        }
+}
+
+# Combine all filings into a single dataframe
+combined_filings <- bind_rows(filings_list)
+
+# Inspect the combined filings
+print(head(combined_filings))
+
+library(openxlsx)
+library(dplyr)
+
+# Define the directory containing your filings
+main_directory <- "/Users/a/Desktop/Desktop - Yichen Pro/Local_file/Thesis/CodeForR/ThesisCode/edgar_Filings/Form 8-K"
+
+# List all subdirectories (each representing a CIK)
+cik_folders <- list.dirs(main_directory, full.names = TRUE, recursive = FALSE)
+
+# Initialize a list to store results
+results_list <- list()
+
+# Function to extract CIK from text content
+extract_cik <- function(content) {
+        # Search for the "CENTRAL INDEX KEY:" line
+        cik_line <- grep("CENTRAL INDEX KEY:", content, value = TRUE)
+        
+        if (length(cik_line) > 0) {
+                # Extract the CIK value, assuming it's the number after the colon
+                cik_value <- sub(".*CENTRAL INDEX KEY:\\s*(\\d+).*", "\\1", cik_line)
+                
+                # If multiple CIKs are found, keep only the first one
+                if (length(cik_value) > 1) {
+                        cik_value <- cik_value[1]
+                }
+                
+                return(cik_value)
+        }
+        
+        return(NA)
+}
+
+# Loop over each CIK folder
+for (cik_folder in cik_folders) {
+        # List all files in the current CIK folder
+        filing_files <- list.files(cik_folder, full.names = TRUE)
+        
+        # Loop over each filing file within the CIK folder
+        for (file in filing_files) {
+                # Read the content of the filing
+                filing_content <- readLines(file, warn = FALSE)
+                
+                # Extract the CIK from the content
+                cik <- extract_cik(filing_content)
+                
+                # Debugging print statements
+                print(paste("Processing file:", file))
+                print(paste("Extracted CIK:", cik))
+                
+                # Store the result only if a valid CIK is found
+                if (!is.na(cik) && cik != "") {
+                        results_list[[length(results_list) + 1]] <- data.frame(CIK = cik, File = file, Content = paste(filing_content, collapse = "\n"))
+                }
+        }
+}
+
+# Combine all results into a single dataframe
+results_df <- bind_rows(results_list)
+# Assuming your dataframe is named 'results_df' and the text column is named 'Content'
+text_column <- "Content"
+
+# Function to extract only the lines containing "CENTRAL INDEX KEY:"
+extract_cik_text <- function(content) {
+        # Split the content by lines
+        content_lines <- unlist(strsplit(content, "\n"))
+        
+        # Search for lines containing "CENTRAL INDEX KEY:"
+        cik_lines <- grep("CENTRAL INDEX KEY:", content_lines, value = TRUE)
+        
+        # Return the lines containing "CENTRAL INDEX KEY:" or NA if not found
+        if (length(cik_lines) > 0) {
+                return(paste(cik_lines, collapse = "\n"))
+        }
+        
+        return(NA)
+}
+
+# Apply the function to extract CIK information and add a new column 'Extracted_Text'
+results_df <- results_df %>%
+        mutate(Extracted_Text = sapply(get(text_column), extract_cik_text))
+
+# Optionally, filter to include only rows where Extracted_Text is not NA or empty
+filtered_results_df <- results_df %>%
+        filter(!is.na(Extracted_Text) & Extracted_Text != "")
+# Let drop the column with whole text, only keep the CIK part, and check how many 
+# of these companies has changed their CIK, then match with TICKER again.
+# Drop the 'Content' column and keep only the 'Filtered_Text' and other relevant columns
+# Alternatively, explicitly keep the columns you want (e.g., "CIK", "File", "Filtered_Text")
+CIK_df <- results_df[, c("CIK", "Extracted_Text")]
+
+# View the modified dataframe
+head(CIK_df)
+# Use sub to extract only the numbers after "CENTRAL INDEX KEY:"
+CIK_df$Extracted_Text <- sub(".*CENTRAL INDEX KEY:\\s*(\\d+).*", "\\1", CIK_df$Extracted_Text)
+# Add a column to indicate whether the CIKs are different
+CIK_df$CIK_Difference <- CIK_df$CIK != CIK_df$Extracted_Text
+
+# Filter the dataframe to keep only rows where the CIKs are different
+different_CIK_df <- CIK_df[CIK_df$CIK_Difference == TRUE, ]
+
+
+# View the updated DataFrame
+head(CIK_df)
+
+colnames(CIK_df)[colnames(CIK_df) == "Extracted_Text"] <- "New_CIK"
+
+# Here we read CERT file to see if they have any info we can use
+library(tools)
+library(dplyr)  # For bind_rows function
+
+# Define the directories containing your CERT filings
+cert_folders <- c(
+        "/Users/a/Desktop/Desktop - Yichen Pro/Local_file/Thesis/CodeForR/ThesisCode/edgar_Filings/Form CERTAMX",
+        "/Users/a/Desktop/Desktop - Yichen Pro/Local_file/Thesis/CodeForR/ThesisCode/edgar_Filings/Form CERTNAS",
+        "/Users/a/Desktop/Desktop - Yichen Pro/Local_file/Thesis/CodeForR/ThesisCode/edgar_Filings/Form CERTNYS"
+)
+
+# Initialize a list to store filenames
+filename_list <- list()
+
+# Loop over each CERT folder
+for (cert_folder in cert_folders) {
+        # List all files in the current CERT folder
+        cert_files <- list.files(cert_folder, full.names = TRUE)
+        
+        # Extract CIK from filename and store in list
+        for (file in cert_files) {
+                # Extract the CIK from the filename (assuming filename is the CIK)
+                cik <- tools::file_path_sans_ext(basename(file))
+                
+                # Append to the list
+                filename_list[[length(filename_list) + 1]] <- data.frame(
+                        CIK = cik,
+                        File = file,
+                        stringsAsFactors = FALSE
+                )
+        }
+}
+
+# Combine all results into a single dataframe
+CERT_list <- bind_rows(filename_list)
+
+# Output the first few rows of the CERT_list dataframe for verification
+head(CERT_list)
+# Function to format CIK to 10 digits
+format_cik <- function(cik) {
+        sprintf("%010d", as.numeric(cik))
+}
+
+# Apply formatting
+CERT_list$CIK <- format_cik(CERT_list$CIK)
+Ticker_list$CIK <- format_cik(Ticker_list$CIK)
+
+# Find common CIKs
+common_cik <- intersect(CERT_list$CIK, Ticker_list$CIK)
+
+# Count common CIKs
+num_common_cik <- length(common_cik)
+
+# Print the number of common CIKs
+print(paste("Number of CIKs in CERT_list that are also in Ticker_list:", num_common_cik))
+# View common CIKs
+print(common_cik)
+
+# install.packages("httr")
+# install.packages("rvest")  # for parsing HTML
+# Load required packages
+library(httr)
+library(jsonlite)
+library(dplyr)
+
+# Function to get ticker from company name using EDGAR
+get_ticker_edgar <- function(company_name) {
+        base_url <- "https://data.sec.gov/submissions/"
+        
+        # Properly encode the company name for the URL
+        encoded_name <- URLencode(company_name, reserved = TRUE)
+        
+        # Construct the URL to search for the company
+        search_url <- paste0(base_url, "CIK0000320193.json")
+        
+        # Make the GET request
+        response <- GET(search_url, add_headers(useragent = "yichenliu.research@gmail.com"))
+        
+        # Check if the request was successful
+        if (status_code(response) == 200) {
+                # Parse the JSON content
+                content <- content(response, as = "text")
+                json_data <- fromJSON(content, flatten = TRUE)
+                
+                # Extract the ticker symbol
+                ticker <- json_data$companyFilings$filing
+                return(ticker)
+        } else {
+                return(NA)
+        }
+}
+
+# Construct dataframe with company names
+company_df <- shell_companys
+
+# Add a new column to store the ticker symbols
+company_df$Ticker <- NA
+# Function to get ticker from company name using Alpha Vantage API
+# Perform the API request
+library(httr)
+library(jsonlite)  # Load jsonlite for parsing JSON
+# Load necessary libraries
+# Load necessary libraries
+library(dplyr)
+library(stringr)
+# Load necessary libraries
+library(dplyr)
+library(stringr)
+
+# Define the directory containing your filings
+main_directory <- "/Users/a/Desktop/Desktop - Yichen Pro/Local_file/Thesis/CodeForR/ThesisCode/edgar_Filings/Form 10-K"
+
+# List all subdirectories (each representing a CIK)
+cik_folders <- list.dirs(main_directory, full.names = TRUE, recursive = FALSE)
+
+# Initialize a list to store results
+results_list <- list()
+
+# Function to extract ticker symbol based on phrases containing "symbol"
+extract_ticker <- function(content) {
+        # Convert the content to uppercase to handle both cases
+        content_upper <- toupper(content)
+        
+        # Define a simpler pattern to search for phrases containing "symbol"
+        ticker_pattern <- "SYMBOL\\s*(\\w+)"  # Looks for "SYMBOL" followed by a word (the ticker)
+        
+        # Search for the phrase and extract the ticker symbol using regex
+        ticker_match <- str_extract(content_upper, ticker_pattern)
+        
+        # If a match is found, clean up the extracted ticker symbol
+        if (!is.na(ticker_match)) {
+                ticker_value <- str_replace(ticker_match, "SYMBOL\\s*", "")  # Remove the word "SYMBOL" from the match
+                return(ticker_value)
+        }
+        
+        return(NA)
+}
+
+# Loop over each CIK folder
+for (cik_folder in cik_folders) {
+        # List all files in the current CIK folder
+        filing_files <- list.files(cik_folder, full.names = TRUE)
+        
+        # Loop over each filing file within the CIK folder
+        for (file in filing_files) {
+                # Extract CIK from the filename (assuming filename is the CIK)
+                cik <- tools::file_path_sans_ext(basename(file))
+                
+                # Read the content of the filing
+                filing_content <- readLines(file, warn = FALSE)
+                filing_content <- paste(filing_content, collapse = "\n")  # Combine lines into a single text
+                
+                # Extract the ticker symbol from the content
+                ticker <- extract_ticker(filing_content)
+                
+                # Debugging print statements
+                print(paste("Processing file:", file))
+                print(paste("Extracted Ticker:", ticker))
+                
+                # Store the result only if a valid Ticker is found
+                if (!is.na(ticker) && ticker != "") {
+                        results_list[[length(results_list) + 1]] <- data.frame(
+                                CIK = cik, 
+                                Ticker = ticker, 
+                                File = file, 
+                                stringsAsFactors = FALSE
+                        )
+                }
+        }
+}
+
+# Combine all results into a single dataframe
+results_df <- bind_rows(results_list)
+
+# Drop rows where the ticker symbol is not found
+filtered_results_df <- results_df %>%
+        filter(!is.na(Ticker) & Ticker != "")
+
+# View the modified dataframe
+head(filtered_results_df)
+
+shell_ticker_supp <- filtered_results_df
+# Step 1: Extract the CIK from the File column
+# Assuming the CIK is the first part of the File string before the underscore
+shell_ticker_supp <- shell_ticker_supp %>%
+        mutate(CIK = sub("_.*", "", basename(File)))  # Extract the part before the first underscore from the file name
+
+# Step 2: Remove duplicate Ticker entries
+shell_ticker_supp <- shell_ticker_supp %>%
+        distinct(Ticker, .keep_all = TRUE)  # Keep the first occurrence of each Ticker
+
+shell_companys$CIK <- as.character(shell_companys$CIK)
+shell_ticker_supp$CIK <- as.character(shell_ticker_supp$CIK)
+
+# Perform a left join to add a new column (e.g., CompanyName) to shell_ticker_supp
+shell_ticker_supp <- shell_ticker_supp %>%
+        left_join(shell_companys %>% select(CIK, Company), by = "CIK")
+
+shell_ticker_supp <- shell_ticker_supp %>%
+        select(-File) 
+shell_ticker_supp$CIK <- as.character(shell_ticker_supp$CIK)
+Ticker$CIK <- as.character(Ticker$CIK)
+
+# Perform a left join to add the Ticker from Ticker list to shell_ticker_supp
+shell_ticker_supp<- shell_ticker_supp %>%
+        left_join(Ticker, by = "Ticker")
+# Filter out rows where Ticker is NA
+shell_ticker_supp <- shell_ticker_supp %>%
+        filter(!is.na(CompanyName))
+shell_ticker_supp <- shell_ticker_supp %>%
+        filter(CIK.x == CIK.y)
+
+shell_ticker_supp <- shell_ticker_supp %>%
+        filter(Exchange != "OTC")
+shell_ticker_supp <- shell_ticker_supp %>%
+        rename(CIK = CIK.x)
+shell_ticker <- bind_rows(shell_ticker_supp, shell_ticker)
+shell_ticker <- shell_ticker %>%
+        select(-CIK.y)
+
+# Now we have all the TICKER here, we need to get stock info for all these TICKER
+# and CEO info.
+# Rename the column in df or shell_ticker if needed
+names(shell_ticker)[names(shell_ticker) == "Ticker"] <- "TICKER"
+
+stock_info <- read_csv("spac_stock.csv")
+library(readr)
+
+# Read the file with different delimiters to check the structure
+ceo_info <- read.xlsx("shell_team.xlsx")
+names(ceo_info)[names(ceo_info) == "Company.ID"] <- "companyid"
+# Rename column in ceo_info (assuming CIK is in shell_ticker)
+companyid_ticker <- read.xlsx('companyid_cik.xlsx')
+names(companyid_ticker)[names(companyid_ticker) == "Symbole.Type.Broad.Category.(CIK,.CUSIP,.GVKEY,.ISIN,.TICKER,.OTHER)"] <- "type"
+# We need to clean this file with only cik, companyid, and companyname in the dataframe
+companyid_cik <- companyid_ticker[grepl("cik", companyid_ticker$type, ignore.case = TRUE), ]
+
+names(companyid_cik)[names(companyid_cik) == "Symbol.Value"] <- "CIK"
+names(companyid_cik)[names(companyid_cik) == "Company.ID"] <- "companyid"
+
+companyid_ticker_filter <- companyid_ticker[grepl("ticker", companyid_ticker$type, ignore.case = TRUE), ]
+names(companyid_ticker_filter)[names(companyid_ticker_filter) == "Symbole.Value"] <- "Ticker"
+
+companyid_ticker_ceo <- merge(ceo_info, companyid_cik, by = "companyid", all.x = TRUE)
+# Define a function to format CIK as a 10-digit string
+format_CIK <- function(CIK) {
+        sprintf("%010d", CIK)
+}
+# Apply the function to the CIK column and update the dataframe
+shell_ticker$CIK <- as.numeric(shell_ticker$CIK)
+shell_ticker$CIK <- sapply(shell_ticker$CIK, format_CIK)
+
+# Perform the merge based on CIK and include TICKER from shell_ticker
+ceo_with_tickers <- merge(companyid_ticker_ceo, shell_ticker[, c("CIK", "TICKER")], 
+                          by = "CIK", all.x = TRUE)
+colnames(ceo_with_tickers)
+# Install and load dplyr if not already installed
+# install.packages("dplyr")
+library(dplyr)
+
+# Drop columns using dplyr's select function
+ceo_with_tickers <- ceo_with_tickers[, !names(ceo_with_tickers) %in% c(
+        "Company.Name.y", "Symbol.ID", "Symbol.Type.Name", "Object.ID", 
+        "Descriptive.Name.for.Object.Type.ID.(Company,.Security,.TradingItem,.or.Transaction)",
+        "Security.Description.Including.Type", "Exchange.ID", "Exchange.Name"
+)]
+
+ceo_with_tickers  <- ceo_with_tickers  %>%
+        filter(!is.na(TICKER))
+# Filter rows where the 'Title' column contains the word 'CEO', case insensitive
+spac_ceo <- ceo_with_tickers[grepl("CEO|Chief Executive Officer", ceo_with_tickers$Title, ignore.case = TRUE), ]
+spac_ceoinfo <- spac_ceo %>%
+        distinct(companyid, Person.ID, Company.Name.x, Title, TICKER, .keep_all = TRUE)
+
+# Assuming your dataframe is named 'ceo_with_tickers' and the title column is 'Title'
+
+spac_ceoinfo$Title_Agg <- ifelse(grepl("Former", spac_ceoinfo$Title, ignore.case = TRUE), 
+                                                "Former CEO", 
+                                                ifelse(grepl("CEO & CFO| CEO, CFO", spac_ceoinfo$Title, ignore.case = TRUE) | 
+                                                               grepl("Chief Executive Officer & Chief Financial Officer", spac_ceoinfo$Title, ignore.case = TRUE), 
+                                                       "CEO & CFO", 
+                                                       ifelse(grepl("CEO", spac_ceoinfo$Title, ignore.case = TRUE) | 
+                                                                      grepl("Chief Executive Officer", spac_ceoinfo$Title, ignore.case = TRUE), 
+                                                              "CEO", 
+                                                              "Other")))
+#install.packages("purrr")
+library(purrr)
+get_vintage_year <- function(ticker) {
+        # Construct the URL for Yahoo Finance profile page
+        url <- paste0("https://finance.yahoo.com/quote/", ticker, "/profile?p=", ticker)
+        
+        # Try to scrape the data, if error occurs return NA
+        tryCatch({
+                # Read the HTML content
+                page <- read_html(url)
+                
+                # Extract the vintage year (founded year)
+                vintage_year <- page %>%
+                        html_nodes(xpath = '//*[@data-test="COMPANY_PROFILE"]') %>%
+                        html_text() %>%
+                        str_extract("Founded: \\d{4}") %>%
+                        str_extract("\\d{4}")
+                
+                # Return the vintage year
+                return(vintage_year)
+        }, error = function(e) {
+                return(NA)
+        })
+}
+
+# Apply the function to get vintage years for all tickers
+shell_ticker <- shell_ticker %>%
+        mutate(Vintage_Year = map_chr(TICKER, get_vintage_year))
+
+# View the updated dataframe with vintage years
+head(shell_ticker)
+
+# View the filtered dataframe
+
+# Now we have all the data for ceo with CIK and Ticker, 
+# and we also have stock info for all the shell company,
+# Now we need to start analysis the data we have
+# based one CIK merge spac_ceoinfo and stock_info.
+# First we analysis the ceo info to have a look
+# Load necessary libraries
+
+library(ggplot2)
+spac_ceoinfo$Start.Year <- as.numeric(spac_ceoinfo$Start.Year)
+
+# Convert Start.Year to a factor for plotting
+spac_ceoinfo$Start.Year <- as.factor(spac_ceoinfo$Start.Year)
+
+# Plot: Distribution of Professional Functions Over Time
+ggplot(spac_ceoinfo, aes(x = Start.Year, fill = Title_Agg)) +
+        geom_bar(position = "stack") +
+        labs(title = "Distribution of Roles by Year",
+             x = "Year",
+             y = "Count of Roles",
+             fill = "Professional Function") +
+        theme_minimal()
+
+# Plot 
+# Filter data to only include active executives
+active_executives <- spac_ceoinfo %>%
+        filter(Current.Flag == 1) %>%
+        group_by(Start.Year) %>%
+        summarize(Count = n())
+
+# Plot: Number of Active Executives Over Time
+ggplot(active_executives, aes(x = as.numeric(Start.Year), y = Count)) +
+        geom_line() +
+        geom_point() +
+        labs(title = "Number of Active Executives Over Time",
+             x = "Year",
+             y = "Number of Active Executives") +
+        theme_minimal()
+
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+
+# Filter and summarize the data for active executives
+active_executives <- spac_ceoinfo %>%
+        filter(Current.Flag == 1) %>%
+        group_by(Start.Year) %>%
+        summarize(Count = n())
+
+# Convert Start.Year to numeric to ensure correct plotting
+active_executives$Start.Year <- as.numeric(as.character(active_executives$Start.Year))
+
+# Plot: Enhanced Number of Active Executives Over Time
+ggplot(active_executives, aes(x = Start.Year, y = Count)) +
+        geom_line(color = "blue", size = 1) +  # Blue line for better visibility
+        geom_point(color = "red", size = 3) +  # Red points for emphasis
+        geom_text(aes(label = Count), vjust = -0.5, size = 3.5, color = "black") +  # Adding data labels
+        geom_smooth(method = "loess", se = FALSE, color = "darkgreen", linetype = "dashed", size = 1) +  # Trend line
+        labs(title = "Number of Active Executives Over Time in SPACs",
+             subtitle = "Including trend line (LOESS)",
+             x = "Year",
+             y = "Number of Active Executives") +
+        theme_minimal(base_size = 15) +  # Increase base font size for better readability
+        theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+              plot.subtitle = element_text(hjust = 0.5),
+              axis.text = element_text(color = "gray20"),
+              axis.title = element_text(face = "bold"),
+              panel.grid.major = element_line(color = "gray80", linetype = "dotted"))  # Light grid lines for clarity
+
+
+# Calculate tenure for each executive
+spac_ceoinfo <- spac_ceoinfo %>%
+        mutate(Start.Year = as.numeric(as.character(Start.Year)),
+               End.Year = as.numeric(as.character(End.Year)))
+
+
+spac_ceoinfo <- spac_ceoinfo %>%
+        mutate(End.Year = ifelse(is.na(End.Year), Start.Year + 1, End.Year),  # If End.Year is NA, assume tenure is 1 year
+               Tenure = End.Year - Start.Year)
+
+# Plot: Tenure of Executives
+ggplot(spac_ceoinfo, aes(x = Tenure)) +
+        geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+        labs(title = "Tenure of Executives",
+             x = "Tenure (Years)",
+             y = "Number of Executives") +
+        theme_minimal()
+# We get the average tenure is 1 year for the company
+
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+
+# Calculate tenure for each executive (ensure data is already prepared)
+spac_ceoinfo <- spac_ceoinfo %>%
+        mutate(End.Year = ifelse(is.na(End.Year), Start.Year + 1, End.Year),  # Assume 1-year tenure if End.Year is missing
+               Tenure = End.Year - Start.Year)
+
+# Calculate the mean and median tenure for reference lines
+mean_tenure <- mean(spac_ceoinfo$Tenure, na.rm = TRUE)
+median_tenure <- median(spac_ceoinfo$Tenure, na.rm = TRUE)
+
+# Plot: Enhanced Tenure of Executives
+ggplot(spac_ceoinfo, aes(x = Tenure)) +
+        geom_histogram(binwidth = 1, fill = "steelblue", color = "black", alpha = 0.7) +  # Adjusted color and transparency
+        geom_vline(aes(xintercept = mean_tenure), color = "red", linetype = "dashed", size = 1) +  # Mean line
+        geom_vline(aes(xintercept = median_tenure), color = "green", linetype = "dashed", size = 1) +  # Median line
+        geom_text(stat = 'bin', aes(label = ..count..), vjust = -0.5, size = 3, color = "black") +  # Adding data labels
+        labs(title = "Distribution of Executive Tenure in SPACs",
+             subtitle = paste("Mean Tenure:", round(mean_tenure, 2), "years | Median Tenure:", round(median_tenure, 2), "years"),
+             x = "Tenure (Years)",
+             y = "Number of Executives") +
+        theme_minimal(base_size = 15) +  # Increase base font size
+        theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+              plot.subtitle = element_text(hjust = 0.5),
+              axis.text = element_text(color = "gray20"),
+              axis.title = element_text(face = "bold"))  # Bold axis titles
+
+
+
+# Load necessary libraries
+library(ggplot2)
+library(RColorBrewer)
+
+# Plot with enhancements
+ggplot(spac_ceoinfo, aes(x = Start.Year, fill = Title_Agg)) +
+        geom_bar(position = "stack", color = "black") +  # Adding a black border around bars
+        scale_fill_brewer(palette = "Set3") +  # Using a color palette from RColorBrewer
+        geom_text(stat = 'count', aes(label = ..count..), position = position_stack(vjust = 0.5), size = 3, color = "white") +  # Adding data labels inside bars
+        labs(title = "Distribution of Roles by Year in SPACs",
+             x = "Year",
+             y = "Count of Roles",
+             fill = "Title/Role") +
+        theme_minimal(base_size = 15) +  # Increase base font size for better readability
+        theme(axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels
+              plot.title = element_text(hjust = 0.5, face = "bold"),  # Center and bold the title
+              panel.grid.major = element_line(color = "gray", linetype = "dashed"),  # Customizing gridlines
+              panel.grid.minor = element_blank())  # Remove minor gridlines
+
+
+# Here we start use CEO start date as events date for events study
+
+spac_ceoinfo <- spac_ceoinfo %>%
+        mutate(
+                Start.Date = as.Date(paste(Start.Year, Start.Month, Start.Day, sep = "-"), format = "%Y-%m-%d")
+        )
+
+# Replace missing Start.Month or Start.Day with default values (e.g., January 1st)
+spac_ceoinfo <- spac_ceoinfo %>%
+        mutate(
+                Start.Month = ifelse(is.na(Start.Month), 1, Start.Month),
+                Start.Day = ifelse(is.na(Start.Day), 1, Start.Day),
+                Start.Date = as.Date(paste(Start.Year, Start.Month, Start.Day, sep = "-"), format = "%Y-%m-%d")
+        )
+
+
+# Create the End.Date column by combining End.Year, End.Month, and End.Day
+spac_ceoinfo <- spac_ceoinfo %>%
+        mutate(
+                End.Date = as.Date(paste(End.Year, End.Month, End.Day, sep = "-"), format = "%Y-%m-%d"),
+                
+                # Handle missing months and days in End.Date
+                End.Month = ifelse(is.na(End.Month), 1, End.Month),
+                End.Day = ifelse(is.na(End.Day), 1, End.Day),
+                End.Date = as.Date(paste(End.Year, End.Month, End.Day, sep = "-"), format = "%Y-%m-%d")
+        )
+
+# Create Event.Date column that takes Start.Date if available, otherwise End.Date
+spac_ceoinfo <- spac_ceoinfo %>%
+        mutate(
+                Event.Date = ifelse(is.na(Start.Date), End.Date, Start.Date)
+        )
+spac_ceoinfo$Event.Date <- as.numeric(spac_ceoinfo$Event.Date)
+
+
+# Summarize continuous variables
+continuous_summary <- spac_ceoinfo %>%
+        summarise(
+                Start_Year_Mean = mean(Start.Year, na.rm = TRUE),
+                Start_Year_SD = sd(Start.Year, na.rm = TRUE),
+                Start_Year_Min = min(Start.Year, na.rm = TRUE),
+                Start_Year_Max = max(Start.Year, na.rm = TRUE),
+                End_Year_Mean = mean(End.Year, na.rm = TRUE),
+                End_Year_SD = sd(End.Year, na.rm = TRUE),
+                End_Year_Min = min(End.Year, na.rm = TRUE),
+                End_Year_Max = max(End.Year, na.rm = TRUE),
+                Tenure_Mean = mean(Tenure, na.rm = TRUE),
+                Tenure_SD = sd(Tenure, na.rm = TRUE),
+                Tenure_Min = min(Tenure, na.rm = TRUE),
+                Tenure_Max = max(Tenure, na.rm = TRUE)
+        )
+
+# Summarize categorical variables
+categorical_summary <- spac_ceoinfo %>%
+        summarise(
+                Deal_Maker_Flag_Yes = sum(Deal.Maker.Flag == 1, na.rm = TRUE),
+                Deal_Maker_Flag_No = sum(Deal.Maker.Flag == 0, na.rm = TRUE),
+                Graduate_Flag_Yes = sum(Graduate.Flag == 1, na.rm = TRUE),
+                Graduate_Flag_No = sum(Graduate.Flag == 0, na.rm = TRUE),
+                # Add other categorical variables similarly
+        )
+
+# Summarize continuous variables
+continuous_summary_Tenure <- spac_ceoinfo %>%
+        summarise(
+                
+                Tenure_Mean = mean(Tenure, na.rm = TRUE),
+                Tenure_SD = sd(Tenure, na.rm = TRUE),
+                Tenure_Min = min(Tenure, na.rm = TRUE),
+                Tenure_Max = max(Tenure, na.rm = TRUE)
+        )
+
+summary_table_1 <- bind_rows(
+        continuous_summary_Tenure %>%
+                pivot_longer(cols = everything(), names_to = "Tenure", values_to = "Years"),
+)
+
+# Create the table with academic-style formatting
+summary_table_1 %>%
+        kable("latex", booktabs = TRUE, caption = "Summary of Tenure Data") %>%
+        kable_styling(latex_options = c("striped", "hold_position"), 
+                      font_size = 10) %>%
+        add_header_above(c(" " = 1, "Years" = ncol(summary_table_1))) %>%
+        footnote(general = "This table summarizes the tenure data in years. And we can see the mean of CEOs in SPACs is 1.05 years; in our database the max tenure year for CEO is 3 years.",
+                 general_title = "Note:",
+                 footnote_as_chunk = TRUE)
+
+
+# Save the table as an image (optional)
+save_kable(summary_table_1, file = "summary_table_1.png")
+
+
+
+
+# Combine continuous and categorical summaries into one table
+summary_table <- bind_rows(
+        continuous_summary %>%
+                pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value"),
+        categorical_summary %>%
+                pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value")
+)
+
+summary(merged_data$Board.Flag)
+summary(merged_data$Experience_Years)
+summary(merged_data$Sponsor.Flag)
+summary(merged_data$Age)
+summary(merged_data$Tenure)
+
+
+# Simple model for overconfidence:
+simplified_model <- glm(Overconfident_CEO ~ Board.Flag + Experience_Years + Age + Tenure, 
+                        family = binomial, data = merged_data)
+summary(simplified_model)
+
+# Load necessary packages
+library(dplyr)
+
+# Create a summary table with counts of CEOs based on different backgrounds
+ceo_summary <- spac_ceoinfo %>%
+        summarise(
+                Sponsor_Background_Count = sum(Sponsor.Flag == 1, na.rm = TRUE),
+                Professional_Background_Count = sum(Professional.Flag == 1, na.rm = TRUE),
+                Board_Background_Count = sum(Board.Flag == 1, na.rm = TRUE),
+                Deal_Maker_Count = sum(Deal.Maker.Flag == 1, na.rm = TRUE),
+                Graduate_Count = sum(Graduate.Flag == 1, na.rm = TRUE),
+                Undergraduate_Count = sum(Undergraduate.Flag == 1, na.rm = TRUE),
+                Only_One_Flag_Count = sum(Only.One.Flag == 1, na.rm = TRUE),
+                Company_Background_Count = sum(Company.Flag == 1, na.rm = TRUE)
+        )
+
+# Print the summary table
+print(ceo_summary)
+
+
+ceo_title_summary <- spac_ceoinfo %>%
+        summarise(
+                Total_CEO_Count = n(),
+                Current_CEO = sum(grepl("CEO", Title_Agg, ignore.case = TRUE) & !grepl("Former", Title_Agg, ignore.case = TRUE), na.rm = TRUE),
+                Former_CEO_Count = sum(grepl("Former CEO", Title_Agg, ignore.case = TRUE), na.rm = TRUE),
+                CEO_CFO_Count = sum(grepl("CEO & CFO", Title_Agg, ignore.case = TRUE), na.rm = TRUE)
+        )
+
+
+
+# Print the summary table
+print(ceo_title_summary)
+
+
+ceo_title_summary %>%
+        kable("latex", booktabs = TRUE, caption = "Summary of CEOs Title") %>%
+        kable_styling(latex_options = c("striped", "hold_position"), 
+                      font_size = 10) %>%
+        add_header_above(c(" " = 1, "Years" = ncol(ceo_title_summary))) %>%
+        footnote(general = "This table summarizes the CEO based on our assumption made in the empirical part.",
+                 general_title = "Note:",
+                 footnote_as_chunk = TRUE)
+
+
+
+# Create and format the summary table
+ceo_title_summary %>%
+        kbl(digits = 0, caption = "Summary of CEO Titles in SPAC Companies") %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), 
+                      full_width = FALSE) %>%
+        column_spec(1, bold = TRUE)
+
+stock_ceo_summary <- merged_data %>%
+        summarise(
+                Sponsor_Background_Count = sum(Sponsor.Flag == 1, na.rm = TRUE),
+                Professional_Background_Count = sum(Professional.Flag == 1, na.rm = TRUE),
+                Board_Background_Count = sum(Board.Flag == 1, na.rm = TRUE),
+                Deal_Maker_Count = sum(Deal.Maker.Flag == 1, na.rm = TRUE),
+                Graduate_Count = sum(Graduate.Flag == 1, na.rm = TRUE),
+                Undergraduate_Count = sum(Undergraduate.Flag == 1, na.rm = TRUE),
+                Only_One_Flag_Count = sum(Only.One.Flag == 1, na.rm = TRUE),
+                Company_Background_Count = sum(Company.Flag == 1, na.rm = TRUE)
+        )
+
+# Print the summary table
+print(stock_ceo_summary)
+
+ceo_stock_summary <- merged_data %>%
+        summarise(
+                Total_CEO_Count = n(),
+                Current_CEO = sum(grepl("CEO", Title_Agg, ignore.case = TRUE) & !grepl("Former", Title_Agg, ignore.case = TRUE), na.rm = TRUE),
+                Former_CEO_Count = sum(grepl("Former CEO", Title_Agg, ignore.case = TRUE), na.rm = TRUE),
+                CEO_CFO_Count = sum(grepl("CEO & CFO", Title_Agg, ignore.case = TRUE), na.rm = TRUE)
+        )
+
+ceo_stock_summary %>%
+        kable("latex", booktabs = TRUE, caption = "Summary of CEOs Title in all SPACs") %>%
+        kable_styling(latex_options = c("striped", "hold_position"), 
+                      font_size = 10) %>%
+        add_header_above(c(" " = 1, "Years" = ncol(ceo_stock_summary))) %>%
+        footnote(general = "This table summarizes the CEO based on our assumption made in the empirical part.",
+                 general_title = "Note:",
+                 footnote_as_chunk = TRUE)
+
+
+# Print the summary table
+print(ceo_stock_summary)
+
+# Create and format the summary table
+ceo_stock_summary %>%
+        kbl(digits = 0, caption = "Summary of CEO Titles in SPAC Companies") %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), 
+                      full_width = FALSE) %>%
+        column_spec(1, bold = TRUE)
+
+
+
+# Load the packages
+library(knitr)
+library(kableExtra)
+
+# Create and format the summary table
+ceo_summary %>%
+        kbl(digits = 0, caption = "Summary of CEO Backgrounds in SPAC Companies") %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), 
+                      full_width = FALSE) %>%
+        column_spec(1, bold = TRUE)
+
+##################################################################
+
+# lets set another model to see the difference here
+# This one is make the background info as the aggregate way
+merged_data <- merged_data %>%
+        mutate(Combined_Flag = Deal.Maker.Flag + Board.Flag + Graduate.Flag + Undergraduate.Flag)
+
+# You can also create an interaction term if needed
+merged_data <- merged_data %>%
+        mutate(Interaction_Flag = Deal.Maker.Flag * Board.Flag)
+
+# Impute missing values using median or another method
+merged_data <- merged_data %>%
+        mutate(Experience_Years = ifelse(is.na(Experience_Years), median(Experience_Years, na.rm = TRUE), Experience_Years),
+               Age = ifelse(is.na(Age), median(Age, na.rm = TRUE), Age),
+               Tenure = ifelse(is.na(Tenure), median(Tenure, na.rm = TRUE), Tenure))
+
+logistic_model <- glm(Overconfident_CEO ~ Experience_Years + Age + Tenure + Combined_Flag, 
+                      family = binomial, data = merged_data)
+
+summary(logistic_model)
+
+
+
+
+
+# Load the packages
+library(knitr)
+library(kableExtra)
+
+# Format the summary table in an academic style
+summary_table %>%
+        kbl(digits = 2, caption = "Summary of SPAC CEO Information") %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), 
+                      full_width = FALSE) %>%
+        column_spec(1, bold = TRUE) %>%
+        column_spec(2, width = "3cm")
+
+# Select only the TICKER and Event.Date columns from spac_ceoinfo
+event_dates <- spac_ceoinfo %>%
+        select(TICKER, Event.Date)
+
+# Convert date columns to Date class if not already in Date format
+stock_info$date <- as.Date(stock_info$date)
+
+# Convert Event.Date if it's numeric
+event_dates$Event.Date <- as.Date(event_dates$Event.Date, origin = "1970-01-01")
+# Rename column in stock_info if necessary
+colnames(stock_info)[colnames(stock_info) == "Ticker"] <- "TICKER"
+# Rename column in event_dates if necessary
+colnames(event_dates)[colnames(event_dates) == "Ticker"] <- "TICKER"
+# Merge the dataframes using the correct column name
+eventstudy <- merge(stock_info, event_dates, by = "TICKER")
+colnames(eventstudy)[colnames(eventstudy) == "Event.Date"] <- "eventdate"
+colnames(eventstudy)[colnames(eventstudy) == "vwretd"] <- "stock_return_value"
+colnames(eventstudy)[colnames(eventstudy) == "ewretd"] <- "stock_return_equal"
+colnames(eventstudy)[colnames(eventstudy) == "RET"] <- "return"
+# Drop specific columns
+eventstudy <- eventstudy %>%
+        select(-PRIMEXCH, -TRDSTAT, -SECSTAT, -PERMCO, -ISSUNO, -HEXCD, -CUSIP, 
+               -DCLRDT, -DLAMT, -DLPDT, -DLSTCD, -NEXTDT, -PAYDT, -RCRDDT, -SHRFLG,
+               -HSICMG, -HSICIG, -DISTCD, -DIVAMT, -FACPR, -FACSHR, -ACPERM, -ACCOMP,
+               -SHRENDDT, -NWPERM, -DLRETX, -DLPRC, -DLRET, -TRTSCD, -NMSIND, -MMCNT, 
+               -NSDINX, -BIDLO, -ASKHI, -PRC, -SHROUT, -CFACPR, -CFACSHR, -OPENPRC,    
+               -NUMTRD, -RETX, -ewretx, -sprtrn, -vwretx,
+               )
+index <- read_csv("index.csv")
+colnames(index)[colnames(index) == "DATE"] <- "date"
+index <- index %>%
+        select(-vwretx, -ewretx, -sprtrn, -spindx, -totval, -totcnt, -usdval, -usdcnt)
+
+colnames(index)[colnames(index) == "vwretd"] <- "index_return_value"
+colnames(index)[colnames(index) == "ewretd"] <- "index_return_equal"
+eventstudy_index <- merge(eventstudy, index, by = "date")
+# Count the number of unique TICKERs in the eventstudy_index dataframe
+unique_tickers_count <- eventstudy_index %>% 
+        summarise(unique_com = n_distinct(COMNAM))
+
+# Print the result
+print(unique_tickers_count)
+
+# Lets try yahoo finance to see if we can have more results
+# install.packages("quantmod")
+library(quantmod)
+
+# Assuming your tickers are stored in a vector
+tickers <- unique(shell_ticker$TICKER)
+
+# Download stock data for all tickers
+getSymbols(tickers, src = "yahoo")
+
+# Create a list to store data for each ticker
+stock_data_list <- list()
+# Load necessary packages
+library(dplyr)
+library(quantmod)
+
+# Initialize an empty list to store individual dataframes
+stock_df_list <- list()
+
+# Loop through the list and convert xts objects to dataframes
+for (ticker in names(stock_data_list)) {
+        # Convert xts object to dataframe
+        stock_df <- data.frame(Date = index(stock_data_list[[ticker]]),
+                               coredata(stock_data_list[[ticker]]))
+        
+        # Add a column for the TICKER symbol
+        stock_df$TICKER <- ticker
+        
+        # Store the dataframe in the list
+        stock_df_list[[ticker]] <- stock_df
+}
+
+# Combine all the dataframes in the list into a single dataframe
+stock_data <- bind_rows(stock_df_list)
+
+library(tidyr)
+library(dplyr)
+
+# Reshape the data: gather all columns except Date and TICKER
+long_stock_data <- stock_data %>%
+        pivot_longer(cols = -c(Date, TICKER), names_to = "Variable", values_to = "Value") %>%
+        drop_na(Value)  # Drop rows with NA values
+
+# Separate the 'Variable' column into 'Company' and 'Type' (Open, Close, etc.)
+long_stock_data <- long_stock_data %>%
+        separate(Variable, into = c("Company", "Type"), sep = "\\.", extra = "merge")
+
+# Spread the 'Type' column back to separate 'Open' and 'Close' columns
+final_stock_data <- long_stock_data %>%
+        pivot_wider(names_from = Type, values_from = Value) %>%
+        select(Company, Date, Open, Close)
+
+# Check the final dataframe
+head(final_stock_data)
+stock_df <- final_stock_data
+# write.xlsx(stock_df, file = '/Users/a/Desktop/Desktop - Yichen Pro/Local_file/Thesis/CodeForR/ThesisCode/stock_df_2024.xlsx', rowNames = FALSE)
+stock_df <- read.xlsx('/Users/a/Desktop/Desktop - Yichen Pro/Local_file/Thesis/CodeForR/ThesisCode/stock_df_2024.xlsx')
+
+# Load necessary library
+library(dplyr)
+
+# Ensure the data is sorted by Company and Date
+stock_df <- stock_df %>%
+        arrange(Company, Date)
+
+# Calculate daily returns using the Close price
+stock_df <- stock_df %>%
+        group_by(Company) %>%
+        mutate(Return = (Close / lag(Close)) - 1) %>%
+        ungroup()
+
+colnames(stock_df)[colnames(stock_df) == "Company"] <- "TICKER"
+eventstudy_1 <- merge(stock_df, event_dates, by = "TICKER")
+colnames(eventstudy_1)[colnames(eventstudy_1) == "Event.Date"] <- "eventdate"
+colnames(eventstudy_1)[colnames(eventstudy_1) == "Date"] <- "date"
+
+# Now we start to apply events study in the dataframe,
+# We have set events window as 7 days, a week to see the reaction of the market
+
+# Calculate the number of days relative to the event date
+eventstudy_1 <- eventstudy_1 %>%
+        mutate(days_relative_to_event = as.numeric(date - eventdate))
+
+# Define your event window, for example, from -10 to +10 days around the event
+event_window <- -3:3
+
+# Filter the data to keep only the observations within the event window
+eventstudy_data <- eventstudy_1 %>%
+        filter(days_relative_to_event %in% event_window)
+
+# Calculate average return in the pre-event period (e.g., -10 to -1 days)
+eventstudy_data <- eventstudy_data %>%
+        group_by(TICKER) %>%
+        mutate(pre_event_avg_return = mean(Return[days_relative_to_event < 0], na.rm = TRUE))
+
+# Calculate abnormal returns as the difference between actual and expected returns
+eventstudy_data <- eventstudy_data %>%
+        mutate(Abnormal_Return = Return - pre_event_avg_return)
+
+# Calculate cumulative abnormal returns (CAR)
+eventstudy_data <- eventstudy_data %>%
+        group_by(TICKER) %>%
+        mutate(CAR = cumsum(Abnormal_Return))
+
+# Perform t-test to check if CAR is significantly different from zero
+# Filter out groups with less than two observations
+# Filter out groups with less than two valid CAR observations
+# Perform t-test only for groups with at least two non-NA observations in CAR
+# Perform t-test only for groups with at least two non-NA observations and non-constant data
+t_test_results <- eventstudy_data %>%
+        filter(days_relative_to_event >= 0) %>%
+        group_by(TICKER) %>%
+        filter(sum(!is.na(CAR)) >= 2) %>%  # Ensure there are at least two non-NA observations
+        summarise(t_test_p_value = ifelse(sum(!is.na(CAR)) >= 2 && sd(CAR, na.rm = TRUE) > 0, 
+                                          t.test(CAR, na.action = na.omit)$p.value, NA)) %>%
+        ungroup()
+
+# View the t-test results
+print(t_test_results)
+
+
+
+# Aggregate CAR across all tickers and perform a t-test
+t_test_result_aggregated <- eventstudy_data %>%
+        filter(days_relative_to_event >= 0, !is.na(CAR)) %>%
+        summarise(aggregated_CAR = mean(CAR, na.rm = TRUE)) %>%
+        summarise(t_test_p_value = t.test(aggregated_CAR)$p.value)
+
+print(t_test_result_aggregated)
+
+
+library(ggplot2)
+
+library(ggplot2)
+
+# Facet by TICKER to separate the lines for each company
+ggplot(eventstudy_data, aes(x = days_relative_to_event, y = CAR, color = TICKER)) +
+        geom_line(size = 1, alpha = 0.7) +  # Reduce line size and add transparency
+        facet_wrap(~ TICKER, scales = "free_y") +  # Separate plots for each ticker
+        labs(title = "Cumulative Abnormal Returns Around Event Date",
+             x = "Days Relative to Event",
+             y = "Cumulative Abnormal Return") +
+        theme_minimal(base_size = 14) +  # Increase base font size for readability
+        theme(legend.position = "none",  # Remove legend for clarity
+              strip.text = element_text(face = "bold"))  # Bold facet labels
+
+# lets have some acadamic table for this
+# Summarize Average Abnormal Return (AAR) and Cumulative Abnormal Return (CAR) by event window
+event_summary <- eventstudy_data %>%
+        group_by(days_relative_to_event) %>%
+        summarise(
+                AAR = mean(Abnormal_Return, na.rm = TRUE),
+                CAR = mean(CAR, na.rm = TRUE),
+                t_statistic = ifelse(sd(Abnormal_Return, na.rm = TRUE) > 0, 
+                                     t.test(Abnormal_Return)$statistic, NA),
+                p_value = ifelse(sd(Abnormal_Return, na.rm = TRUE) > 0, 
+                                 t.test(Abnormal_Return)$p.value, NA)
+        )
+
+
+event_summary %>%
+        kable("latex", booktabs = TRUE, caption = "event_summary") %>%
+        kable_styling(latex_options = c("striped", "hold_position"), 
+                      font_size = 10) %>%
+        add_header_above(c(" " = 1, "Years" = ncol(event_summary))) %>%
+        footnote(general = "This table summarizes the events study results.",
+                 general_title = "Note:",
+                 footnote_as_chunk = TRUE)
+
+
+# install.packages("knitr")
+# Install kableExtra package
+# install.packages("kableExtra")
+
+library(knitr)
+library(kableExtra)
+# install.packages("xfun")
+library(xfun)
+##########################################
+#####################################
+# modify here for the results table 
+
+# Create an academic-style table
+event_summary %>%
+        kbl(digits = 4, caption = "Event Study Results: Average Abnormal Return (AAR) and Cumulative Abnormal Return (CAR)") %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), 
+                      full_width = FALSE) %>%
+        add_header_above(c(" " = 1, "Abnormal Returns" = 2, "Statistical Tests" = 2)) %>%
+        column_spec(1, bold = TRUE) %>%
+        column_spec(2:5, width = "2cm")
+
+
+# Here we start to have another analysis for ceo background regression
+# we will apply logic regression here to have the results
+
+# Merge ceo_info with eventstudy_data
+merged_data <- merge(eventstudy_data, spac_ceoinfo, by = "TICKER")
+# Create a binary outcome variable based on CAR
+merged_data <- merged_data %>%
+        mutate(CAR_Positive = ifelse(CAR > 0, 1, 0))
+
+merged_data <- merged_data %>%
+        mutate(Age = 2024 - Year.Born)
+merged_data <- merged_data %>%
+        mutate(Experience_Years = Start.Year - Year.Company.Founded)
+
+# This one is make the background info as the aggregate way
+merged_data <- merged_data %>%
+        mutate(Combined_Flag = Deal.Maker.Flag + Sponsor.Flag + Board.Flag + Graduate.Flag + Undergraduate.Flag)
+
+# You can also create an interaction term if needed
+merged_data <- merged_data %>%
+        mutate(Interaction_Flag = Deal.Maker.Flag * Board.Flag)
+
+# Impute missing values using median or another method
+merged_data <- merged_data %>%
+        mutate(Experience_Years = ifelse(is.na(Experience_Years), median(Experience_Years, na.rm = TRUE), Experience_Years),
+               Age = ifelse(is.na(Age), median(Age, na.rm = TRUE), Age),
+               Tenure = ifelse(is.na(Tenure), median(Tenure, na.rm = TRUE), Tenure))
+
+
+merged_data <- merged_data %>%
+        mutate(Experienced_CEO = ifelse(Experience_Years > 10, 1, 0))
+
+# Logistic regression: Predicting positive CAR based on CEO characteristics
+logistic_model <- glm(CAR_Positive ~ Experience_Years + Age + Combined_Flag, 
+                      data = merged_data, 
+                      family = binomial)
+
+# View the summary of the model
+summary(logistic_model)
+
+
+# Logistic regression: Predicting positive CAR based on CEO characteristics
+logistic_model_all <- glm(CAR_Positive ~ Experience_Years + Age + 
+                              Combined_Flag + Only.One.Flag +
+                              Active.Flag + Tenure,
+                      data = merged_data, 
+                      family = binomial)
+
+# Summary of the logistic regression model
+summary(logistic_model_all)
+exp(coef(logistic_model))
+
+###############################################
+#########################################
+# Table for thesis
+# Model 1: Only Experience_Years
+# Model 1: Only Experience_Years
+model1 <- glm(CAR_Positive ~ Experience_Years, family = binomial, data = merged_data)
+
+# Model 2: Add Age
+model2 <- glm(CAR_Positive ~ Experience_Years + Age, family = binomial, data = merged_data)
+
+# Model 3: Add Combined_Flag
+model3 <- glm(CAR_Positive ~ Experience_Years + Age + Combined_Flag, family = binomial, data = merged_data)
+
+# Model 4: Add Only.One.Flag
+model4 <- glm(CAR_Positive ~ Experience_Years + Age + Combined_Flag + Only.One.Flag, family = binomial, data = merged_data)
+
+# Model 5: Add Active.Flag
+model5 <- glm(CAR_Positive ~ Experience_Years + Age + Combined_Flag + Only.One.Flag + Active.Flag, family = binomial, data = merged_data)
+
+# Model 6: Add Tenure
+model6 <- glm(CAR_Positive ~ Experience_Years + Age + Combined_Flag + Only.One.Flag + Active.Flag + Tenure, family = binomial, data = merged_data)
+
+summary(model1)
+summary(model2)
+summary(model3)
+summary(model4)
+summary(model5)
+summary(model6)
+
+# WE TRY TO MAKE THIS AS AN ACADAMICA STYLE TO PUT EVERYTHING IN r
+# Load necessary libraries
+library(broom)  # For tidy model outputs
+library(dplyr)  # For data manipulation
+
+
+library(broom)
+
+# Tidy the model outputs
+model1_summary <- tidy(model1)
+model2_summary <- tidy(model2)
+model3_summary <- tidy(model3)
+model4_summary <- tidy(model4)
+model5_summary <- tidy(model5)
+model6_summary <- tidy(model6)
+
+# Display the summaries
+print(model1_summary)
+print(model2_summary)
+print(model3_summary)
+print(model4_summary)
+print(model5_summary)
+print(model6_summary)
+
+# Compute AIC and BIC for each model
+model_comparison <- data.frame(
+        Model = c("Model 1", "Model 2", "Model 3", "Model 4", "Model 5", "Model 6"),
+        AIC = c(AIC(model1), AIC(model2), AIC(model3), AIC(model4), AIC(model5), AIC(model6)),
+        BIC = c(BIC(model1), BIC(model2), BIC(model3), BIC(model4), BIC(model5), BIC(model6))
+)
+
+# Print model comparison table
+print(model_comparison)
+# Load the stargazer package
+library(stargazer)
+
+# Create a LaTeX table for the models
+stargazer(model1, model2, model3, model4, model5, model6, type = "latex", 
+          title = "Logistic Regression Results",
+          out = "regression_results.tex")
+
+
+
+
+# Example with texreg
+# install.packages("texreg")
+library(texreg)
+
+screenreg(list(model1, model2, model3, model4, model5, model6), 
+          custom.model.names = c("Model 1", "Model 2", "Model 3", "Model 4", "Model 5", "Model 6"),
+          custom.coef.names = c("Intercept", "Experience_Years", "Age", "Combined_Flag", "Only_One_Flag", "Active_Flag", "Tenure"))
+texreg(list(model1, model2, model3, model4, model5, model6), 
+       custom.model.names = c("Model 1", "Model 2", "Model 3", "Model 4", "Model 5", "Model 6"),
+       custom.coef.names = c("Intercept", "Experience_Years", "Age", "Combined_Flag", "Only_One_Flag", "Active_Flag", "Tenure"),
+       file = "regression_ceo_background.tex",  # Specify the output file
+       caption = "Regression Results for CAR_Positive",
+       label = "tab:regression_results",
+       stars = c(0.01, 0.05, 0.1))  # Custom significance stars
+
+
+
+# Load necessary libraries
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(tidyr)
+
+# Calculate summary statistics for continuous variables
+continuous_summary <- merged_data %>%
+        summarise(
+                Experience_Years_Mean = mean(Experience_Years, na.rm = TRUE),
+                Experience_Years_SD = sd(Experience_Years, na.rm = TRUE),
+                Age_Mean = mean(Age, na.rm = TRUE),
+                Age_SD = sd(Age, na.rm = TRUE),
+                Tenure_Mean = mean(Tenure, na.rm = TRUE),
+                Tenure_SD = sd(Tenure, na.rm = TRUE)
+        )
+
+# Calculate frequencies for categorical variables
+categorical_summary <- merged_data %>%
+        summarise(
+                Graduate_Flag_Yes = sum(Graduate.Flag == 1, na.rm = TRUE),
+                Graduate_Flag_No = sum(Graduate.Flag == 0, na.rm = TRUE),
+                Deal_Maker_Flag_Yes = sum(Deal.Maker.Flag == 1, na.rm = TRUE),
+                Deal_Maker_Flag_No = sum(Deal.Maker.Flag == 0, na.rm = TRUE),
+                Sponsor_Flag_Yes = sum(Sponsor.Flag == 1, na.rm = TRUE),
+                Sponsor_Flag_No = sum(Sponsor.Flag == 0, na.rm = TRUE),
+                Undergraduate_Flag_Yes = sum(Undergraduate.Flag == 1, na.rm = TRUE),
+                Undergraduate_Flag_No = sum(Undergraduate.Flag == 0, na.rm = TRUE),
+                Only_One_Flag_Yes = sum(Only.One.Flag == 1, na.rm = TRUE),
+                Only_One_Flag_No = sum(Only.One.Flag == 0, na.rm = TRUE),
+                Company_Flag_Yes = sum(Company.Flag == 1, na.rm = TRUE),
+                Company_Flag_No = sum(Company.Flag == 0, na.rm = TRUE),
+                Active_Flag_Yes = sum(Active.Flag == 1, na.rm = TRUE),
+                Active_Flag_No = sum(Active.Flag == 0, na.rm = TRUE)
+        )
+
+# Combine continuous and categorical summaries into a table
+summary_table <- bind_rows(
+        continuous_summary %>%
+                pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value"),
+        categorical_summary %>%
+                pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value")
+)
+
+# Create an academic-style table using kableExtra
+summary_table %>%
+        kbl(digits = 2, caption = "Summary Statistics of CEO Characteristics") %>%
+        kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), 
+                      full_width = FALSE) %>%
+        column_spec(1, bold = TRUE)
+
+# Load the car package if you haven't already
+# install.packages("car")
+library(car)
+
+# Check for aliasing in the model
+alias(linear_model)
+# Remove aliased variables and refit the model
+linear_model <- lm(CAR ~ Board.Flag + Experience_Years + Age + Tenure, 
+                   data = merged_data)
+
+# Check the new model summary
+summary(linear_model)
+# Check for multicollinearity using VIF
+vif(linear_model)
+# Create an interaction term
+linear_model_1 <- lm(CAR ~ Deal.Maker.Flag * Tenure + Board.Flag + Experience_Years + Age, 
+                   data = merged_data)
+
+# View the summary of the model
+summary(linear_model_1)
+
+# install.packages("stargazer")
+library(stargazer)
+# Assuming linear_model is your final regression model
+stargazer(linear_model, type = "text", 
+          title = "Regression Results",
+          dep.var.labels = "Cumulative Abnormal Returns (CAR)",
+          covariate.labels = c("Board.Flag", "Experience Years", "Age", "Tenure"),
+          omit.stat = c("LL", "ser", "f"),  # Omit certain statistics if not needed
+          ci = TRUE,  # Include confidence intervals if you want
+          single.row = TRUE)  # Coefficients in a single row
+
+# Export to LaTeX
+stargazer(linear_model, type = "latex", 
+          out = "regression_results.tex")
+
+# Export to HTML
+stargazer(linear_model, type = "html", 
+          out = "regression_results.html")
+
+
+# View the summary of the model
+summary(logistic_model)
+
+# Now we try to figure out CEO overconfidence or not
+linear_model <- lm(CAR ~ Experience_Years + Age + Tenure + 
+                           Combined_Flag, 
+                   data = merged_data)
+summary(linear_model)
+
+
+predicted_probs <- predict(logistic_model, newdata = merged_data, type = "response")
+# Remove rows with missing values in the relevant columns
+merged_data_clean <- merged_data %>%
+        filter(!is.na(CAR_Positive))
+
+# Generate predicted probabilities using the cleaned data
+predicted_probs <- predict(logistic_model, newdata = merged_data_clean, type = "response")
+
+# Check that the lengths are now the same
+length(merged_data_clean$CAR_Positive) == length(predicted_probs)
+table(merged_data_clean$CAR_Positive, predicted_probs > 0.5)
+
+merged_data <- merge(merged_data, index, by = "date")
+
+library(ggplot2)
+
+ggplot(data = merged_data, aes(x = days_relative_to_event)) + 
+        geom_line(aes(y = index_return_value, color = "Index Return"), size = 1) +  # Line for index return
+        geom_point(aes(y = Return, color = TICKER), size = 2, alpha = 0.6) +  # Points for stock returns by TICKER
+        labs(title = "Stock Returns vs Index Return by Days Relative to Event",
+             x = "Days Relative to Event",
+             y = "Return",
+             color = "Legend") +
+        theme_minimal() +
+        theme(legend.position = "bottom")
+
+
+
+# ROC Curve (if you have pROC package installed)
+# install.packages("pROC")
+library(pROC)
+length(merged_data$CAR_Positive)
+length(predicted_probs)
+# Generate predicted probabilities for the logistic regression model
+predicted_probs <- predict(logistic_model, type = "response", newdata = merged_data)
+# Remove rows with missing values in either the response or predictor
+complete_cases <- complete.cases(merged_data$CAR_Positive, predicted_probs)
+roc_curve <- roc(merged_data$CAR_Positive[complete_cases], predicted_probs[complete_cases])
+# Plot the ROC curve
+plot(roc_curve, main = "ROC Curve for Logistic Regression Model")
+
+roc_curve <- roc(merged_data$CAR_Positive, predicted_probs)
+plot(roc_curve)
+
+##############################################################
+#############################################################
+############################################################
+##########Stop here for the master thesis.
